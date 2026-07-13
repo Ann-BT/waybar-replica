@@ -1,0 +1,4 @@
+singleton Theme Theme.qml
+singleton ShellState ShellState.qml
+WifiTab WifiTab.qml
+BluetoothTab BluetoothTab.qml

@@ -1,0 +1,815 @@
+import QtQuick
+import Quickshell
+import Quickshell.Wayland
+import Quickshell.Hyprland
+import Quickshell.Services.SystemTray
+import Quickshell.Services.UPower
+import Quickshell.Io
+import Quickshell.Widgets
+
+ShellRoot {
+    id: root
+
+    Variants {
+        model: Quickshell.screens
+         delegate: PanelWindow {
+            id: barWindow
+            required property var modelData
+            screen: modelData
+            
+            property bool trayExpanded: false
+            
+            WlrLayershell.namespace: "quickshell:bar"
+            exclusionMode: ExclusionMode.Ignore
+            exclusiveZone: 0
+            color: "transparent"
+
+            anchors {
+                top: true
+                left: true
+                right: true
+                bottom: true
+            }
+
+            mask: Region {
+                item: barContainer
+            }
+
+            // Floating centered container representing the bar
+            Rectangle {
+                id: barContainer
+                width: root.controlCenterOpen ? root.openPanelWidth : (root.osdOpen ? 252 : (mainRow.implicitWidth + 24))
+                height: root.controlCenterOpen ? root.openPanelHeight : (root.osdOpen ? 46 : 32)
+                color: "transparent"
+                border.width: 0
+
+                anchors {
+                    horizontalCenter: parent.horizontalCenter
+                    top: parent.top
+                    topMargin: 0
+                }
+
+                property real bgRadius: root.controlCenterOpen ? 24 : (root.osdOpen ? 23 : 12)
+                property real bgOpacity: root.controlCenterOpen ? 0.70 : (root.osdOpen ? 0.92 : 0.70)
+                property real borderOpacity: root.controlCenterOpen ? 0.15 : (root.osdOpen ? 0.6 : 0.15)
+
+                Behavior on width {
+                    NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
+                }
+                Behavior on height {
+                    NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
+                }
+                Behavior on bgRadius {
+                    NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
+                }
+                Behavior on bgOpacity {
+                    NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
+                }
+                Behavior on borderOpacity {
+                    NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
+                }
+
+                Canvas {
+                    id: notchBackground
+                    z: -1
+                    width: parent.width + (barContainer.bgRadius * 2)
+                    height: parent.height
+
+                    anchors {
+                        horizontalCenter: parent.horizontalCenter
+                        top: parent.top
+                    }
+
+                    property real drawRadius: barContainer.bgRadius
+                    property real drawBgOpacity: barContainer.bgOpacity
+                    property real drawBorderOpacity: barContainer.borderOpacity
+                    property color drawSurface: root.mSurface
+                    property color drawOutline: root.mOutline
+
+                    onDrawRadiusChanged: requestPaint()
+                    onDrawBgOpacityChanged: requestPaint()
+                    onDrawBorderOpacityChanged: requestPaint()
+                    onDrawSurfaceChanged: requestPaint()
+                    onDrawOutlineChanged: requestPaint()
+
+                    onWidthChanged: requestPaint()
+                    onHeightChanged: requestPaint()
+
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+
+                        var r = drawRadius;
+                        var w = width;
+                        var h = height;
+                        var b = 0; // top border/offset
+
+                        // 1. Fill background
+                        ctx.beginPath();
+                        ctx.moveTo(0, b);
+                        ctx.arcTo(r, b, r, b + r, r);
+                        ctx.lineTo(r, h - r);
+                        ctx.arcTo(r, h, r + r, h, r);
+                        ctx.lineTo(w - 2 * r, h);
+                        ctx.arcTo(w - r, h, w - r, h - r, r);
+                        ctx.lineTo(w - r, b + r);
+                        ctx.arcTo(w - r, b, w, b, r);
+                        ctx.lineTo(w, 0);
+                        ctx.lineTo(0, 0);
+                        ctx.closePath();
+                        ctx.fillStyle = Qt.rgba(drawSurface.r, drawSurface.g, drawSurface.b, drawBgOpacity);
+                        ctx.fill();
+
+                        // 2. Stroke border (no top border)
+                        ctx.beginPath();
+                        ctx.moveTo(0, b);
+                        ctx.arcTo(r, b, r, b + r, r);
+                        ctx.lineTo(r, h - r);
+                        ctx.arcTo(r, h, r + r, h, r);
+                        ctx.lineTo(w - 2 * r, h);
+                        ctx.arcTo(w - r, h, w - r, h - r, r);
+                        ctx.lineTo(w - r, b + r);
+                        ctx.arcTo(w - r, b, w, b, r);
+                        ctx.strokeStyle = Qt.rgba(drawOutline.r, drawOutline.g, drawOutline.b, drawBorderOpacity);
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                    }
+                }
+
+                // Layout
+                Row {
+                    id: mainRow
+                    height: 32
+                    opacity: (root.controlCenterOpen || root.osdOpen) ? 0.0 : 1.0
+                    visible: opacity > 0.0
+                    Behavior on opacity {
+                        NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                    }
+                    anchors {
+                        horizontalCenter: parent.horizontalCenter
+                        bottom: parent.bottom
+                    }
+                    spacing: 5
+
+                    // 1. Clock (Time)
+                    MouseArea {
+                        width: timeText.implicitWidth + 8
+                        height: 32
+                        anchors.verticalCenter: parent.verticalCenter
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleControlCenter()
+
+                        Text {
+                            id: timeText
+                            anchors.centerIn: parent
+                            text: timeDateSource.timeString
+                            color: root.mOnSurface // @on_background
+                            font {
+                                family: "Google Sans Flex"
+                                pixelSize: 13
+                                bold: true
+                            }
+                        }
+                    }
+
+                    // 2. Workspaces
+                    Item {
+                        id: workspacesContainer
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 24
+                        width: workspacesRow.width
+
+                        // Track the focused workspace index for the sliding highlight
+                        property int focusedIndex: {
+                            for (var i = 0; i < 10; i++) {
+                                var wsId = i + 1
+                                if (Hyprland.focusedWorkspace && Hyprland.focusedWorkspace.id === wsId) {
+                                    // Calculate x position based on visible items before this one
+                                    return i
+                                }
+                            }
+                            return -1
+                        }
+
+                        // Calculate the x position of the focused workspace button
+                        property real highlightX: {
+                            if (focusedIndex < 0) return 0
+                            var x = 0
+                            for (var i = 0; i < focusedIndex; i++) {
+                                var item = workspacesRepeater.itemAt(i)
+                                if (item && item.visible) {
+                                    x += item.width + 4 // width + spacing
+                                }
+                            }
+                            return x
+                        }
+
+                        property bool hasFocused: focusedIndex >= 0
+
+                        // Sliding highlight pill
+                        Rectangle {
+                            id: highlightPill
+                            width: 24
+                            height: 24
+                            radius: 8
+                            color: root.mPrimary
+                            opacity: workspacesContainer.hasFocused ? 1.0 : 0.0
+                            x: workspacesContainer.highlightX
+                            y: 0
+                            z: 0
+
+                            Behavior on x {
+                                NumberAnimation {
+                                    duration: 380
+                                    easing.type: Easing.OutBack
+                                    easing.overshoot: 1.2
+                                }
+                            }
+                            Behavior on opacity {
+                                NumberAnimation { duration: 200; easing.type: Easing.InOutQuad }
+                            }
+
+                            // Trailing glow effect
+                            Rectangle {
+                                id: trailGlow
+                                anchors.centerIn: parent
+                                width: parent.width + 4
+                                height: parent.height + 4
+                                radius: 10
+                                color: "transparent"
+                                border.width: 2
+                                border.color: root.mPrimary
+                                opacity: 0.0
+                                z: -1
+
+                                // Pulse on workspace change
+                                SequentialAnimation on opacity {
+                                    id: trailAnim
+                                    running: false
+                                    NumberAnimation { to: 0.5; duration: 80; easing.type: Easing.OutQuad }
+                                    NumberAnimation { to: 0.0; duration: 350; easing.type: Easing.InOutCubic }
+                                }
+                            }
+
+                            // Scale pulse on change
+                            transform: Scale {
+                                id: pillScale
+                                origin.x: 12; origin.y: 12
+                                xScale: 1.0; yScale: 1.0
+                            }
+                            SequentialAnimation {
+                                id: scaleAnim
+                                running: false
+                                ParallelAnimation {
+                                    NumberAnimation { target: pillScale; property: "xScale"; to: 1.15; duration: 100; easing.type: Easing.OutQuad }
+                                    NumberAnimation { target: pillScale; property: "yScale"; to: 0.88; duration: 100; easing.type: Easing.OutQuad }
+                                }
+                                ParallelAnimation {
+                                    NumberAnimation { target: pillScale; property: "xScale"; to: 0.95; duration: 120; easing.type: Easing.InOutQuad }
+                                    NumberAnimation { target: pillScale; property: "yScale"; to: 1.05; duration: 120; easing.type: Easing.InOutQuad }
+                                }
+                                ParallelAnimation {
+                                    NumberAnimation { target: pillScale; property: "xScale"; to: 1.0; duration: 180; easing.type: Easing.OutElastic; easing.amplitude: 0.6 }
+                                    NumberAnimation { target: pillScale; property: "yScale"; to: 1.0; duration: 180; easing.type: Easing.OutElastic; easing.amplitude: 0.6 }
+                                }
+                            }
+                        }
+
+                        // Trigger animations when focus changes
+                        onFocusedIndexChanged: {
+                            if (focusedIndex >= 0) {
+                                scaleAnim.restart()
+                                trailAnim.restart()
+                            }
+                        }
+
+                        Row {
+                            id: workspacesRow
+                            spacing: 4
+
+                            Repeater {
+                                id: workspacesRepeater
+                                model: 10
+                                delegate: MouseArea {
+                                    id: wsButton
+                                    property int wsId: index + 1
+                                    property bool isFocused: Hyprland.focusedWorkspace && Hyprland.focusedWorkspace.id === wsId
+                                    property bool isOccupied: Hyprland.workspaces.values.some(function(ws) { return ws.id === wsId; })
+
+                                    visible: isFocused || isOccupied
+                                    width: visible ? 24 : 0
+                                    height: 24
+                                    cursorShape: Qt.PointingHandCursor
+                                    z: 1
+
+                                    Behavior on width {
+                                        NumberAnimation { duration: 250; easing.type: Easing.InOutCubic }
+                                    }
+
+                                    onClicked: Quickshell.execDetached(["hyprctl", "dispatch", "hl.dsp.focus({ workspace = " + wsId + " })"])
+
+                                    // No background rect - the sliding pill handles the highlight
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"][index]
+                                        color: wsButton.isFocused ? root.mOnPrimary : (wsButton.isOccupied ? root.mOnSurface : Qt.rgba(root.mOnSurface.r, root.mOnSurface.g, root.mOnSurface.b, 0.4))
+                                        font {
+                                            family: "Google Sans Flex"
+                                            pixelSize: 13
+                                            bold: true
+                                        }
+                                        Behavior on color {
+                                            ColorAnimation { duration: 250; easing.type: Easing.InOutQuad }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. Transparency Toggle
+                    MouseArea {
+                        width: 24
+                        height: 32
+                        anchors.verticalCenter: parent.verticalCenter
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            Quickshell.execDetached(["/home/merlin/.config/waybar/toggle_transparency.sh"])
+                            transparencyCheckTimer.restart()
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: root.isOpaque ? "󰈉" : "󰈈"
+                            color: root.isOpaque ? root.mSecondary : root.mPrimary // @secondary vs @primary
+                            font {
+                                family: "JetBrains Mono NF"
+                                pixelSize: 15
+                                bold: true
+                            }
+                        }
+                    }
+
+                    // 4. Battery
+                    MouseArea {
+                        id: batteryArea
+                        height: 32
+                        anchors.verticalCenter: parent.verticalCenter
+                        hoverEnabled: true
+                        
+                        width: batteryContentRow.implicitWidth + 8
+
+                        Row {
+                            id: batteryContentRow
+                            anchors.left: parent.left
+                            anchors.leftMargin: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 4
+
+                            Text {
+                                text: {
+                                    if (!UPower.displayDevice) return "";
+                                    var pct = Math.round(UPower.displayDevice.percentage * 100);
+                                    var icon = "";
+                                    if (pct < 20) icon = "";
+                                    else if (pct < 40) icon = "";
+                                    else if (pct < 60) icon = "";
+                                    else if (pct < 80) icon = "";
+                                    return icon;
+                                }
+                                color: root.mPrimary // @primary
+                                font {
+                                    family: "JetBrains Mono NF"
+                                    pixelSize: 13
+                                    bold: true
+                                }
+                            }
+
+                            Row {
+                                id: batteryDetailRow
+                                spacing: 4
+                                clip: true
+                                anchors.verticalCenter: parent.verticalCenter
+
+                                width: batteryArea.containsMouse ? implicitWidth : 0
+                                Behavior on width {
+                                    NumberAnimation { duration: 250; easing.type: Easing.InOutQuad }
+                                }
+
+                                Text {
+                                    text: {
+                                        if (!UPower.displayDevice) return "";
+                                        var pct = Math.round(UPower.displayDevice.percentage * 100);
+                                        var isCharging = UPower.displayDevice.state === UPowerDeviceState.Charging;
+                                        var isPluggedIn = UPower.displayDevice.state === UPowerDeviceState.FullyCharged || UPower.displayDevice.state === UPowerDeviceState.PendingCharge;
+                                        
+                                        var pctText = pct + "%";
+                                        var stateText = "";
+                                        if (isCharging) stateText = " 󱐥";
+                                        else if (isPluggedIn) stateText = " ";
+
+                                        var timeText = "";
+                                        var seconds = 0;
+                                        if (isCharging || isPluggedIn) {
+                                            seconds = UPower.displayDevice.timeToFull;
+                                            if (seconds > 0) {
+                                                var hFull = Math.floor(seconds / 3600);
+                                                var mFull = Math.floor((seconds % 3600) / 60);
+                                                timeText = " (" + hFull + "h " + mFull + "m to full)";
+                                            }
+                                        } else {
+                                            seconds = UPower.displayDevice.timeToEmpty;
+                                            if (seconds > 0) {
+                                                var hEmpty = Math.floor(seconds / 3600);
+                                                var mEmpty = Math.floor((seconds % 3600) / 60);
+                                                timeText = " (" + hEmpty + "h " + mEmpty + "m left)";
+                                            }
+                                        }
+
+                                        return pctText + stateText + timeText;
+                                    }
+                                    color: root.mPrimary // @primary
+                                    font {
+                                        family: "JetBrains Mono NF"
+                                        pixelSize: 13
+                                        bold: true
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 5. System Tray (Collapsible Drawer)
+                    Row {
+                        id: trayContainer
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+                        
+                        // Tray Items Container first (left)
+                        Row {
+                            id: trayIconsRow
+                            spacing: 6
+                            clip: true
+                            anchors.verticalCenter: parent.verticalCenter
+                            
+                            // Animate width for a smooth slide-out drawer effect
+                            width: barWindow.trayExpanded ? implicitWidth : 0
+                            Behavior on width {
+                                NumberAnimation { duration: 250; easing.type: Easing.InOutQuad }
+                            }
+
+                            Repeater {
+                                model: SystemTray.items.values
+                                delegate: MouseArea {
+                                    id: trayItem
+                                    required property var modelData
+                                    width: 18
+                                    height: 18
+                                    cursorShape: Qt.PointingHandCursor
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                                    QsMenuAnchor {
+                                        id: menuAnchor
+                                        menu: trayItem.modelData.menu
+                                    }
+
+                                    onPressed: (event) => {
+                                        if (event.button === Qt.LeftButton) {
+                                            modelData.activate();
+                                        } else if (event.button === Qt.RightButton) {
+                                            if (trayItem.modelData.hasMenu) {
+                                                menuAnchor.open();
+                                            } else {
+                                                modelData.secondaryActivate();
+                                            }
+                                        }
+                                    }
+
+                                    IconImage {
+                                        source: modelData.icon
+                                        anchors.fill: parent
+                                    }
+                                }
+                            }
+                        }
+
+                        // Toggle Arrow Button second (right)
+                        MouseArea {
+                            width: 16
+                            height: 24
+                            anchors.verticalCenter: parent.verticalCenter
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: barWindow.trayExpanded = !barWindow.trayExpanded
+                            visible: SystemTray.items.values.length > 0
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: barWindow.trayExpanded ? "" : ""
+                                color: root.mPrimary // @primary
+                                font {
+                                    family: "JetBrains Mono NF"
+                                    pixelSize: 13
+                                    bold: true
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // OSD Row Layout
+                Row {
+                    id: osdRow
+                    height: 46
+                    opacity: (!root.controlCenterOpen && root.osdOpen) ? 1.0 : 0.0
+                    visible: opacity > 0.0
+                    Behavior on opacity {
+                        NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                    }
+                    anchors {
+                        verticalCenter: parent.verticalCenter
+                        left: parent.left
+                        right: parent.right
+                        leftMargin: 12
+                        rightMargin: 12
+                    }
+                    spacing: 10
+
+                    Text {
+                        id: osdIconText
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: {
+                            var icon = root.osdIcon
+                            if (icon === "volume-mute" || icon === "microphone-mute") return "󰝟"
+                            if (icon === "volume-low") return "󰕿"
+                            if (icon === "volume-high") return "󰕾"
+                            if (icon === "microphone") return "󰍬"
+                            if (icon === "brightness-low") return "󰃞"
+                            if (icon === "brightness-high") return "󰃠"
+                            return "󰕾" // default fallback
+                        }
+                        color: root.mPrimary
+                        font {
+                            family: "JetBrains Mono NF"
+                            pixelSize: 18
+                            bold: true
+                        }
+                    }
+
+                    Rectangle {
+                        id: osdProgressBar
+                        height: 6
+                        radius: 3
+                        color: root.mOutline
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width - osdIconText.width - osdValueText.width - parent.spacing * 2
+
+                        Rectangle {
+                            height: parent.height
+                            width: parent.width * root.osdValue
+                            radius: parent.radius
+                            color: root.mPrimary
+                        }
+                    }
+
+                    Text {
+                        id: osdValueText
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: Math.round(root.osdValue * 100) + "%"
+                        color: root.mOnSurface
+                        font {
+                            family: "Google Sans Flex"
+                            pixelSize: 13
+                            bold: true
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Time & Date updater source
+    QtObject {
+        id: timeDateSource
+        property string timeString: ""
+        property string dateString: ""
+
+        function update() {
+            var d = new Date();
+            timeString = Qt.formatDateTime(d, "HH:mm");
+            dateString = " • " + Qt.formatDateTime(d, "MMMM d");
+        }
+
+        Component.onCompleted: update()
+    }
+
+    Timer {
+        interval: 1000 // Update every second for snappy startup and accuracy
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: timeDateSource.update()
+    }
+
+    // Transparency State Checker
+    property bool isOpaque: false
+
+    Process {
+        id: transparencyCheck
+        command: ["test", "-f", "/home/merlin/.config/hypr/disable_transparency"]
+        onExited: (exitCode) => {
+            isOpaque = (exitCode === 0)
+        }
+    }
+
+    Timer {
+        id: transparencyCheckTimer
+        interval: 500 // Check frequently to keep UI responsive
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: transparencyCheck.running = true
+    }
+
+    // Theme Colors
+    property color mSurface: "#091516"
+    property color mOutline: "#324b4c"
+    property color mPrimary: "#88d990"
+    property color mSecondary: "#9cd49f"
+    property color mOnSurface: "#d7e5e5"
+    property color mOnPrimary: "#0f1414"
+
+    FileView {
+        id: colorsFile
+        path: "/home/merlin/.local/state/quickshell/user/generated/colors.json"
+        watchChanges: true
+        preload: true
+
+        onFileChanged: reload()
+
+        onLoaded: {
+            try {
+                var obj = JSON.parse(text())
+                if (obj.surface) mSurface = obj.surface
+                if (obj.outline) mOutline = obj.outline
+                if (obj.primary) mPrimary = obj.primary
+                if (obj.secondary) mSecondary = obj.secondary
+                if (obj.on_surface) mOnSurface = obj.on_surface
+                if (obj.on_primary) mOnPrimary = obj.on_primary
+            } catch (e) {
+                console.log("Error parsing colors.json: " + e)
+            }
+        }
+    }
+
+    // Control Center & Panel states
+    property bool controlCenterOpen: false
+    property string activePanel: "control-center"
+    property real panelGap: 8
+    property real openPanelWidth: 780 + (panelGap * 2)
+    property real openPanelHeight: 520 + panelGap
+
+    // OSD state
+    property bool osdOpen: false
+    property string osdIcon: ""
+    property real osdValue: 0.0
+
+    Timer {
+        id: osdCloseTimer
+        interval: 2000
+        running: false
+        repeat: false
+        onTriggered: {
+            root.osdOpen = false
+        }
+    }
+
+    function toggleControlCenter() {
+        if (controlCenterOpen && activePanel === "control-center") {
+            controlCenterOpen = false
+            Quickshell.execDetached(["noctalia", "msg", "panel-toggle", "control-center"])
+        } else {
+            activePanel = "control-center"
+            openPanelWidth = 780 + (panelGap * 2)
+            openPanelHeight = 520 + panelGap
+            controlCenterOpen = true
+            openTimer.start()
+        }
+    }
+
+    Timer {
+        id: openTimer
+        // Fire at 80ms so Noctalia's ~200ms reveal animation finishes (~280ms)
+        // in sync with the bar's 300ms morph — eliminating the staggered lag.
+        interval: 80
+        running: false
+        repeat: false
+        onTriggered: {
+            Quickshell.execDetached(["noctalia", "msg", "panel-toggle", "control-center"])
+        }
+    }
+
+    function toggleLauncher() {
+        if (controlCenterOpen && activePanel === "launcher") {
+            controlCenterOpen = false
+            Quickshell.execDetached(["noctalia", "msg", "panel-toggle", "launcher"])
+        } else {
+            activePanel = "launcher"
+            openPanelWidth = 560 + (panelGap * 2)
+            openPanelHeight = 460 + panelGap
+            controlCenterOpen = true
+            openTimerLauncher.start()
+        }
+    }
+
+    Timer {
+        id: openTimerLauncher
+        // Same 80ms offset as openTimer for consistent sync across panels.
+        interval: 80
+        running: false
+        repeat: false
+        onTriggered: {
+            Quickshell.execDetached(["noctalia", "msg", "panel-toggle", "launcher"])
+        }
+    }
+
+    // IPC interface to trigger toggling
+    IpcHandler {
+        target: "waybarControlCenter"
+        function toggle(): void {
+            root.toggleControlCenter()
+        }
+    }
+
+    IpcHandler {
+        target: "waybarLauncher"
+        function toggle(): void {
+            root.toggleLauncher()
+        }
+    }
+
+    IpcHandler {
+        target: "waybarOsd"
+        function show(data: string): void {
+            var parts = data.split(",")
+            if (parts.length < 2) return
+            var icon = parts[0]
+            var val = parseInt(parts[1])
+            if (isNaN(val)) val = 0
+            root.osdIcon = icon
+            root.osdValue = val / 100.0
+            if (!root.controlCenterOpen) {
+                root.osdOpen = true
+                osdCloseTimer.restart()
+            }
+        }
+    }
+
+    // Process to query active panel ID when opened externally
+    Process {
+        id: queryStatusProcess
+        command: ["sh", "-c", "noctalia msg status | jq -c ."]
+        stdout: SplitParser {
+            onRead: (line) => {
+                var payload = line.trim()
+                if (!payload) return
+                try {
+                    var status = JSON.parse(payload)
+                    var panelId = status.activePanelId || "control-center"
+                    root.activePanel = panelId
+                    if (panelId === "control-center") {
+                        root.openPanelWidth = 780 + (root.panelGap * 2)
+                        root.openPanelHeight = 520 + root.panelGap
+                    } else if (panelId === "launcher") {
+                        root.openPanelWidth = 560 + (root.panelGap * 2)
+                        root.openPanelHeight = 460 + root.panelGap
+                    } else if (panelId === "clipboard") {
+                        root.openPanelWidth = 920 + (root.panelGap * 2)
+                        root.openPanelHeight = 560 + root.panelGap
+                    }
+                    root.controlCenterOpen = true
+                } catch (e) {
+                    console.log("Error parsing status JSON: " + e)
+                }
+            }
+        }
+    }
+
+    // Connections to Hyprland layer surface events to handle click-out and X button closing
+    Connections {
+        target: Hyprland
+        function onRawEvent(event) {
+            if (event.name === "openlayer") {
+                if (event.data === "noctalia-panel") {
+                    if (queryStatusProcess.running) {
+                        queryStatusProcess.running = false
+                    }
+                    queryStatusProcess.running = true
+                }
+            } else if (event.name === "closelayer") {
+                if (event.data === "noctalia-panel") {
+                    root.controlCenterOpen = false;
+                }
+            }
+        }
+    }
+}
