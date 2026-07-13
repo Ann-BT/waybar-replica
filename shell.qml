@@ -46,12 +46,12 @@ ShellRoot {
                 anchors {
                     horizontalCenter: parent.horizontalCenter
                     top: parent.top
-                    topMargin: 0
+                    topMargin: root.controlCenterOpen ? 0 : 6
                 }
 
-                property real bgRadius: root.controlCenterOpen ? 24 : (root.osdOpen ? 23 : 12)
-                property real bgOpacity: root.controlCenterOpen ? 0.70 : (root.osdOpen ? 0.92 : 0.70)
-                property real borderOpacity: root.controlCenterOpen ? 0.15 : (root.osdOpen ? 0.6 : 0.15)
+                property real bgRadius: root.controlCenterOpen ? 24 : (root.osdOpen ? 23 : 16)
+                property real bgOpacity: root.controlCenterOpen ? 0.70 : (root.osdOpen ? 0.92 : 0.85)
+                property real borderOpacity: root.controlCenterOpen ? 0.15 : (root.osdOpen ? 0.6 : 0.2)
 
                 Behavior on width {
                     NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
@@ -69,70 +69,24 @@ ShellRoot {
                     NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
                 }
 
-                Canvas {
-                    id: notchBackground
+                // Pill-shaped background
+                Rectangle {
+                    id: pillBackground
                     z: -1
-                    width: parent.width + (barContainer.bgRadius * 2)
-                    height: parent.height
+                    anchors.fill: parent
+                    radius: barContainer.bgRadius
+                    color: Qt.rgba(root.mSurface.r, root.mSurface.g, root.mSurface.b, barContainer.bgOpacity)
+                    border.width: 1
+                    border.color: Qt.rgba(root.mOutline.r, root.mOutline.g, root.mOutline.b, barContainer.borderOpacity)
 
-                    anchors {
-                        horizontalCenter: parent.horizontalCenter
-                        top: parent.top
+                    Behavior on radius {
+                        NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
                     }
-
-                    property real drawRadius: barContainer.bgRadius
-                    property real drawBgOpacity: barContainer.bgOpacity
-                    property real drawBorderOpacity: barContainer.borderOpacity
-                    property color drawSurface: root.mSurface
-                    property color drawOutline: root.mOutline
-
-                    onDrawRadiusChanged: requestPaint()
-                    onDrawBgOpacityChanged: requestPaint()
-                    onDrawBorderOpacityChanged: requestPaint()
-                    onDrawSurfaceChanged: requestPaint()
-                    onDrawOutlineChanged: requestPaint()
-
-                    onWidthChanged: requestPaint()
-                    onHeightChanged: requestPaint()
-
-                    onPaint: {
-                        var ctx = getContext("2d");
-                        ctx.reset();
-
-                        var r = drawRadius;
-                        var w = width;
-                        var h = height;
-                        var b = 0; // top border/offset
-
-                        // 1. Fill background
-                        ctx.beginPath();
-                        ctx.moveTo(0, b);
-                        ctx.arcTo(r, b, r, b + r, r);
-                        ctx.lineTo(r, h - r);
-                        ctx.arcTo(r, h, r + r, h, r);
-                        ctx.lineTo(w - 2 * r, h);
-                        ctx.arcTo(w - r, h, w - r, h - r, r);
-                        ctx.lineTo(w - r, b + r);
-                        ctx.arcTo(w - r, b, w, b, r);
-                        ctx.lineTo(w, 0);
-                        ctx.lineTo(0, 0);
-                        ctx.closePath();
-                        ctx.fillStyle = Qt.rgba(drawSurface.r, drawSurface.g, drawSurface.b, drawBgOpacity);
-                        ctx.fill();
-
-                        // 2. Stroke border (no top border)
-                        ctx.beginPath();
-                        ctx.moveTo(0, b);
-                        ctx.arcTo(r, b, r, b + r, r);
-                        ctx.lineTo(r, h - r);
-                        ctx.arcTo(r, h, r + r, h, r);
-                        ctx.lineTo(w - 2 * r, h);
-                        ctx.arcTo(w - r, h, w - r, h - r, r);
-                        ctx.lineTo(w - r, b + r);
-                        ctx.arcTo(w - r, b, w, b, r);
-                        ctx.strokeStyle = Qt.rgba(drawOutline.r, drawOutline.g, drawOutline.b, drawBorderOpacity);
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
+                    Behavior on color {
+                        ColorAnimation { duration: 300 }
+                    }
+                    Behavior on border.color {
+                        ColorAnimation { duration: 300 }
                     }
                 }
 
@@ -151,30 +105,6 @@ ShellRoot {
                     }
                     spacing: 5
 
-                    // 0. Launcher Button
-                    MouseArea {
-                        id: launcherButton
-                        height: 32
-                        width: 24
-                        anchors.verticalCenter: parent.verticalCenter
-                        cursorShape: Qt.PointingHandCursor
-                        hoverEnabled: true
-                        onClicked: root.toggleLauncher()
-
-                        Text {
-                            text: "󰀻"
-                            color: launcherButton.containsMouse ? root.mSecondary : root.mPrimary
-                            anchors.centerIn: parent
-                            font {
-                                family: "JetBrains Mono NF"
-                                pixelSize: 15
-                                bold: true
-                            }
-                            Behavior on color {
-                                ColorAnimation { duration: 150 }
-                            }
-                        }
-                    }
 
                     // 1. Clock (Time)
                     MouseArea {
@@ -352,28 +282,6 @@ ShellRoot {
                         }
                     }
 
-                    // 3. Transparency Toggle
-                    MouseArea {
-                        width: 24
-                        height: 32
-                        anchors.verticalCenter: parent.verticalCenter
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            Quickshell.execDetached(["/home/merlin/.config/waybar/toggle_transparency.sh"])
-                            transparencyCheckTimer.restart()
-                        }
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: root.isOpaque ? "󰈉" : "󰈈"
-                            color: root.isOpaque ? root.mSecondary : root.mPrimary // @secondary vs @primary
-                            font {
-                                family: "JetBrains Mono NF"
-                                pixelSize: 15
-                                bold: true
-                            }
-                        }
-                    }
 
                     // 4. Battery
                     MouseArea {
