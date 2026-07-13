@@ -54,7 +54,7 @@ ShellRoot {
                 property real borderOpacity: root.controlCenterOpen ? 0.15 : (root.osdOpen ? 0.6 : 0.2)
 
                 Behavior on width {
-                    NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
+                    NumberAnimation { duration: 250; easing.type: Easing.InOutCubic }
                 }
                 Behavior on height {
                     NumberAnimation { duration: 300; easing.type: Easing.OutCubic }
